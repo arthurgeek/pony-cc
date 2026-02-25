@@ -1,11 +1,18 @@
 use "cli"
 use "net"
+use "term"
+use "promises"
 
 class Server is TCPConnectionNotify
   let _out: OutStream
+  let _main: Main
 
-  new create(out: OutStream) =>
+  new create(out: OutStream, main: Main) =>
     _out = out
+    _main = main
+
+  fun ref accepted(conn: TCPConnection ref) =>
+    _main._conn_opened(conn)
 
   fun ref received(conn: TCPConnection ref, data: Array[U8] iso, times: USize): Bool =>
     _out.print(String.from_array(consume data))
@@ -14,19 +21,38 @@ class Server is TCPConnectionNotify
   fun ref connect_failed(conn: TCPConnection ref) =>
     None
 
+  fun ref closed(conn: TCPConnection ref) =>
+    _main._conn_closed(conn)
+
 class Listener is TCPListenNotify
   let _out: OutStream
+  let _main: Main
 
-  new create(out: OutStream) =>
+  new create(out: OutStream, main: Main) =>
     _out = out
+    _main = main
 
   fun ref connected(listen: TCPListener ref): TCPConnectionNotify iso^ =>
-    recover iso Server(_out) end
+    listen.dispose()
+    recover iso Server(_out, _main) end
 
   fun ref not_listening(listen: TCPListener ref) =>
     _out.print("Not listening")
 
+class Handler is ReadlineNotify
+  let _main: Main
+
+  new create(main: Main) =>
+    _main = main
+
+  fun ref apply(line: String, prompt: Promise[String]) =>
+    prompt("")
+    _main._stdin_data(line)
+
 actor Main
+  var _conn: (TCPConnection tag | None) = None
+  var _term: (ANSITerm tag | None) = None
+
   new create(env: Env) =>
     let cs = try
       CommandSpec.leaf("ccnc", "A netcat clone in Pony", [
@@ -63,11 +89,36 @@ actor Main
     let listen = cmd.option("listen").bool()
     let local_port = cmd.option("local-port").u64()
 
-    if listen and local_port != 0 then
+    if listen and (local_port != 0) then
       TCPListener(
         TCPListenAuth(env.root),
-        recover Listener(env.out) end,
+        recover Listener(env.out, this) end,
         "0.0.0.0",
         local_port.string()
       )
+
+      let term = ANSITerm(Readline(recover Handler(this) end, env.out), env.input)
+      _term = term
+      term.prompt("")
+      let notify = object iso
+        let term: ANSITerm = term
+        fun ref apply(data: Array[U8] iso) => term(consume data)
+        fun ref dispose() => term.dispose()
+      end
+
+      env.input(consume notify)
+    end
+
+  be _conn_opened(conn: TCPConnection tag) =>
+    _conn = conn
+
+  be _conn_closed(conn: TCPConnection tag) =>
+    _conn = None
+    match _term
+      | let t: ANSITerm => t.dispose()
+    end
+
+  be _stdin_data(data: String val) =>
+    match _conn
+      | let conn: TCPConnection tag => conn.write(data + "\n")
     end

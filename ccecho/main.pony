@@ -20,7 +20,12 @@ class EchoServer is TCPConnectionNotify
       )
     end
 
-    conn.close()
+  fun ref received(conn: TCPConnection ref, data: Array[U8] iso, times: USize): Bool =>
+    conn.write(String.from_array(consume data))
+    true
+
+  fun ref closed(conn: TCPConnection ref) =>
+    _out.print("Client disconnected")
 
   fun ref connect_failed(conn: TCPConnection ref) =>
     None

@@ -21,7 +21,6 @@ class EchoServer is TCPConnectionNotify
     end
 
     conn.close()
-    _main.dispose()
 
   fun ref connect_failed(conn: TCPConnection ref) =>
     None

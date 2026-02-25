@@ -1,8 +1,11 @@
 use "cli"
 use "net"
 use "term"
+use "files"
+use "process"
 use "promises"
 use "collections"
+use "backpressure"
 
 class NCTCPServer is TCPConnectionNotify
   let _out: OutStream
@@ -16,7 +19,9 @@ class NCTCPServer is TCPConnectionNotify
     _main._conn_opened(conn)
 
   fun ref received(conn: TCPConnection ref, data: Array[U8] iso, times: USize): Bool =>
-    _out.print(String.from_array(consume data))
+    let str = String.from_array(consume data)
+    _out.print(str)
+    _main._conn_received(str)
     true
 
   fun ref connect_failed(conn: TCPConnection ref) =>
@@ -84,15 +89,29 @@ class Handler is ReadlineNotify
 
   fun ref apply(line: String, prompt: Promise[String]) =>
     prompt("")
-    _main._stdin_data(line)
+    _main._send_data(line)
+
+class ProcessClient is ProcessNotify
+  let _main: Main
+
+  new create(main: Main) =>
+    _main = main
+
+  fun ref stdout(process: ProcessMonitor ref, data: Array[U8] iso) =>
+    _main._send_data(String.from_array(consume data))
 
 actor Main
   var _tcp_conn: (TCPConnection tag | None) = None
   var _udp_sock: (UDPSocket tag | None) = None
   var _term: (ANSITerm tag | None) = None
   var _udp_from: (NetAddress | None) = None
+  var _env: Env
+  var _pm: (ProcessMonitor | None) = None
+  var _exec: String = ""
 
   new create(env: Env) =>
+    _env = env
+
     let cs = try
       CommandSpec.leaf("ccnc", "A netcat clone in Pony", [
         OptionSpec.bool(
@@ -119,6 +138,12 @@ actor Main
           where short' = 'z',
           default' = false
         )
+        OptionSpec.string(
+          "exec",
+          "program to exec after connect"
+          where short' = 'e',
+          default' = ""
+        )
       ], [
            ArgSpec.string("host", "target host" where default' = "")
            ArgSpec.string("port", "port or port range" where default' = "")
@@ -144,8 +169,9 @@ actor Main
     let local_port = cmd.option("local-port").u64()
     let udp = cmd.option("udp").bool()
     let zero_io_mode = cmd.option("zero").bool()
+    _exec = cmd.option("exec").string()
 
-    if listen and (local_port != 0)then
+    if listen and (local_port != 0) then
       if udp then
         UDPSocket(
           UDPAuth(env.root),
@@ -200,10 +226,12 @@ actor Main
 
   be _conn_opened(conn: TCPConnection tag) =>
     _tcp_conn = conn
+    _start_process()
 
   be _udp_connected(sock: UDPSocket tag, from: NetAddress) =>
     _udp_sock = sock
     _udp_from = from
+    _start_process()
 
   be _conn_closed(conn: TCPConnection tag) =>
     _tcp_conn = None
@@ -211,11 +239,29 @@ actor Main
       | let t: ANSITerm => t.dispose()
     end
 
-  be _stdin_data(data: String val) =>
+  be _start_process() =>
+    if _exec != "" then
+      let client = recover ProcessClient(this) end
+
+      let notifier: ProcessNotify iso = consume client
+      let path = FilePath(FileAuth(_env.root), _exec)
+      let args: String = Path.base(_exec)
+      let sp_auth = StartProcessAuth(_env.root)
+      let bp_auth = ApplyReleaseBackpressureAuth(_env.root)
+
+      _pm = ProcessMonitor(sp_auth, bp_auth, consume notifier, path, [args], _env.vars)
+    end
+
+  be _send_data(data: String val) =>
     match _tcp_conn
       | let conn: TCPConnection tag => conn.write(data + "\n")
     end
 
     match (_udp_sock, _udp_from)
       | (let sock: UDPSocket tag, let addr: NetAddress) => sock.write(data + "\n", addr)
+    end
+
+  be _conn_received(data: String val) =>
+    match _pm
+      | let pm: ProcessMonitor => pm.write(data)
     end

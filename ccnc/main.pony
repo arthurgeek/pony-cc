@@ -2,6 +2,7 @@ use "cli"
 use "net"
 use "term"
 use "files"
+use "format"
 use "process"
 use "promises"
 use "collections"
@@ -54,8 +55,10 @@ class NCUDPServer is UDPNotify
     _main = main
 
   fun ref received(sock: UDPSocket ref, data: Array[U8] iso, from: NetAddress) =>
-    _out.print(String.from_array(consume data))
+    let str = String.from_array(consume data)
+    _out.print(str)
     _main._udp_connected(sock, from)
+    _main._conn_received(str)
 
   fun ref not_listening(sock: UDPSocket ref) =>
       None
@@ -99,6 +102,34 @@ class ProcessClient is ProcessNotify
 
   fun ref stdout(process: ProcessMonitor ref, data: Array[U8] iso) =>
     _main._send_data(String.from_array(consume data))
+
+primitive HexDumper
+  fun print(out: OutStream, data: String val) =>
+    for offset in Range[USize](0, data.size(), 16) do
+      let chunk = data.trim(offset, offset + 16)
+
+      var line = Format.int[USize](offset where fmt = FormatHexBare, width = 8, fill = '0')
+      line = line + "  "
+      var ascii = ""
+      for i in Range[USize](0, 16) do
+        if i < chunk.size() then
+          try
+            let byte = chunk(i)?
+            line = line + Format.int[U8](byte where fmt = FormatHexBare, width = 2, fill = '0') + " "
+            ascii = ascii + if (byte >= 0x20) and (byte <= 0x7E) then
+              String.from_utf32(byte.u32())
+            else
+              "."
+            end
+          end
+        else
+          line = line + "   "
+        end
+        if ((i + 1) % 4) == 0 then line = line + " " end
+      end
+
+      out.print(line + ascii)
+    end
 
 actor Main
   var _tcp_conn: (TCPConnection tag | None) = None
@@ -253,15 +284,23 @@ actor Main
     end
 
   be _send_data(data: String val) =>
+    let sent = recover val data + "\n" end
+
     match _tcp_conn
-      | let conn: TCPConnection tag => conn.write(data + "\n")
+      | let conn: TCPConnection tag => conn.write(sent)
     end
 
     match (_udp_sock, _udp_from)
-      | (let sock: UDPSocket tag, let addr: NetAddress) => sock.write(data + "\n", addr)
+      | (let sock: UDPSocket tag, let addr: NetAddress) => sock.write(sent, addr)
     end
+
+    _env.out.print("Sent " + sent.size().string() + " bytes to the socket")
+    HexDumper.print(_env.out, sent)
 
   be _conn_received(data: String val) =>
     match _pm
       | let pm: ProcessMonitor => pm.write(data)
     end
+
+    _env.out.print("Received " + data.size().string() + " bytes from the socket")
+    HexDumper.print(_env.out, data)

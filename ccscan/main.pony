@@ -1,5 +1,6 @@
 use "cli"
 use "net"
+use "collections"
 
 class Scanner is TCPConnectionNotify
   let _out: OutStream
@@ -60,6 +61,14 @@ actor Main
     let host = cmd.option("host").string()
     let port = cmd.option("port").string()
 
-    env.out.print("Scanning host: " + host + " port: " + port)
+    if port != "" then
+      env.out.print("Scanning host: " + host + " port: " + port)
 
-    TCPConnection(TCPConnectAuth(env.root), recover Scanner(env.out) end, host, port)
+      TCPConnection(TCPConnectAuth(env.root), recover Scanner(env.out) end, host, port)
+    else
+      env.out.print("Scanning host: " + host)
+
+      for p in Range[U64](1, 65535 + 1) do
+        TCPConnection(TCPConnectAuth(env.root), recover Scanner(env.out) end, host, p.string())
+      end
+    end

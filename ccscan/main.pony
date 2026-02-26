@@ -98,8 +98,8 @@ actor Main
     let cs = try
       CommandSpec.leaf("ccscan", "A network scanner in Pony", [
         OptionSpec.string(
-          "host",
-          "host to connect to"
+          "hosts",
+          "host(s) to connect to (separated by commas)"
           where short' = 'H',
           default' = ""
         )
@@ -139,8 +139,31 @@ actor Main
         return
     end
 
-    let host = cmd.option("host").string()
+    let hosts = cmd.option("hosts").string()
     let port = cmd.option("port").string()
+
+    let host_list: Array[String] val = recover val
+      let expanded = Array[String]
+
+      for h in hosts.split(",").values() do
+        if h.contains("*") then
+          let parts = h.split("*")
+
+          try
+            let prefix = parts(0)?
+            let suffix = parts(1)?
+
+            for i in Range[U64](0, 256) do
+              expanded.push(prefix + i.string() + suffix)
+            end
+          end
+        else
+          expanded.push(h.clone())
+        end
+      end
+
+      expanded
+    end
 
     let max_conns: U64 = cmd.option("max-conns").u64()
     let workers_opt: U64 = cmd.option("workers").u64()
@@ -151,37 +174,41 @@ actor Main
     end
 
     let pool: ConnectionPool = ConnectionPool(max_conns)
-    let batch_size: U64 = max_conns / workers
+    let num_hosts = host_list.size().u64()
+    let num_coordinators = num_hosts * workers
+    let batch_size: U64 = (max_conns / num_coordinators).max(1)
 
-    if port != "" then
-      env.out.print("Scanning host: " + host + " port:" + port)
+    for host in host_list.values() do
+      if port != "" then
+        env.out.print("Scanning host: " + host + " port:" + port)
 
-      try
-        let p = port.u64()?
-        ScannerCoordinator(env.out, TCPConnectAuth(env.root), host,
-          p, p, pool, max_conns)
-      end
-    else
-      env.out.print("Scanning host: " + host)
-
-      let ports_per_worker: U64 = 65535 / workers
-
-      for i in Range[U64](0, workers) do
-        let start_port = (i * ports_per_worker) + 1
-        let end_port = if i == (workers - 1) then
-          65535
-        else
-          (i + 1) * ports_per_worker
+        try
+          let p = port.u64()?
+          ScannerCoordinator(env.out, TCPConnectAuth(env.root), host,
+            p, p, pool, batch_size)
         end
+      else
+        env.out.print("Scanning host: " + host)
 
-        ScannerCoordinator(
-          env.out,
-          TCPConnectAuth(env.root),
-          host,
-          start_port,
-          end_port,
-          pool,
-          batch_size
-        )
+        let ports_per_worker: U64 = 65535 / workers
+
+        for i in Range[U64](0, workers) do
+          let start_port = (i * ports_per_worker) + 1
+          let end_port = if i == (workers - 1) then
+            65535
+          else
+            (i + 1) * ports_per_worker
+          end
+
+          ScannerCoordinator(
+            env.out,
+            TCPConnectAuth(env.root),
+            host,
+            start_port,
+            end_port,
+            pool,
+            batch_size
+          )
+        end
       end
     end
